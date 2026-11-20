@@ -30,11 +30,19 @@ def main() -> int:
         gh.remove_label(pr, l)
 
     if a.mode == "review-only":
-        gh.add_labels(pr, ["autose:reviewer-approved" if v["verdict"] == "approve" else "autose:changes-requested"])
+        gh.add_labels(pr, [{"approve": "autose:reviewer-approved", "inconclusive": "autose:ready-for-human"}
+                           .get(v["verdict"], "autose:changes-requested")])
         return 0
 
+    st, _ = gh.read_state(issue)
+    if int(st.get("round", rnd)) > rnd:  # a later round already exists (re-run of this job, ADR-004)
+        print("state comment shows a later round; not dispatching again")
+        return 0
     sendbacks_used = rnd - 1  # round 1 is the initial build; rounds 2..3 are rework rounds
-    if v["verdict"] == "approve":
+    if v["verdict"] == "inconclusive":
+        gh.add_labels(pr, ["autose:ready-for-human"])
+        msg, stage = "Review was inconclusive (the reviewer did not finish). No rework dispatched; a human must decide.", "done"
+    elif v["verdict"] == "approve":
         gh.add_labels(pr, ["autose:reviewer-approved", "autose:ready-for-human"])
         msg, stage = f"Reviewer approved in round {rnd}. Ready for a human decision.", "done"
     elif sendbacks_used < MAX_SENDBACKS:
@@ -53,7 +61,6 @@ def main() -> int:
         msg, stage = (f"Reviewer still requests changes after {MAX_SENDBACKS} rework rounds. "
                       "Stopping; a human must decide."), "done"
     gh.comment(issue, f"{gh.BOT_PREFIX} — review round {rnd}: `{v['verdict']}`. {msg}\nPR: #{pr} · Run: {gh.run_url()}")
-    st, _ = gh.read_state(issue)
     st.update(round=rnd, stage=stage, last_verdict=v["verdict"], review_run=os.environ.get("GITHUB_RUN_ID", ""))
     gh.write_state(issue, st, msg)
     return 0

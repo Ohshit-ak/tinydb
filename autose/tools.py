@@ -84,7 +84,9 @@ def run_pytest(cwd: Path, targets: list[str] | None = None, k: str | None = None
     if k:
         argv += ["-k", k]
     argv += targets or ["tests"]
-    return sandbox_run(argv, cwd, timeout, extra_env)
+    env = {"PYTHONPATH": str(cwd)}  # import the tinydb of *this* tree (base or work), never site-packages
+    env.update(extra_env or {})
+    return sandbox_run(argv, cwd, timeout, env)
 
 
 # ---------------------------------------------------------------- tool factories
@@ -203,7 +205,8 @@ def run_tools(jail: Jail, allow_python: bool = False, build: bool = False) -> li
 
     if build:
         def check_build() -> str:
-            code, out = sandbox_run([sys.executable, "-m", "compileall", "-q", "tinydb"], jail.root, 120)
+            code, out = sandbox_run([sys.executable, "-m", "compileall", "-q", "tinydb"], jail.root, 120,
+                                    {"PYTHONPATH": str(jail.root)})
             if code:
                 return f"compileall FAILED\n{out}"
             code, out = sandbox_run([sys.executable, "-c", "import tinydb; print('import ok')"],

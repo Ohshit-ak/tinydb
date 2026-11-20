@@ -8,7 +8,7 @@ d="$GITHUB_WORKSPACE"
 while [ "$d" != "/" ]; do sudo chmod o+x "$d" || true; d=$(dirname "$d"); done
 chmod -R a+rwX "$GITHUB_WORKSPACE"
 PY=$(python -c 'import sys; print(sys.executable)')
-if sudo -n -u autose-sandbox env -i PATH=/usr/bin:/bin "$PY" -c "import tinydb, pytest" 2>/dev/null \
+if sudo -n -u autose-sandbox env -i PATH=/usr/bin:/bin PYTHONPATH="$GITHUB_WORKSPACE" "$PY" -c "import tinydb, pytest" 2>/dev/null \
    && ! sudo -n -u autose-sandbox env -i cat "/proc/$$/environ" >/dev/null 2>&1; then
   echo "AUTOSE_SANDBOX_USER=autose-sandbox" >> "$GITHUB_ENV"
   echo "sandbox user ready (cannot read runner environ)"

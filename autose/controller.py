@@ -22,7 +22,7 @@ from pathlib import Path
 
 from . import checks
 from .llm import AgentStuck, BudgetExceeded, Usage, check_models, one_shot, run_agent
-from .tools import Jail, read_tools, run_pytest, run_tools, submit_tool, write_tools
+from .tools import Jail, read_tools, run_pytest, run_tools, sandbox_run, submit_tool, write_tools
 
 PKG = Path(__file__).resolve().parent
 PROMPTS = PKG / "prompts"
@@ -221,14 +221,15 @@ class Controller:
             return False, f"changes outside the allowlist were reverted: {bad}"
         if not code_paths:
             return False, "no code changes (empty diff in tinydb/ or docs/)"
-        p = subprocess.run([sys.executable, "-m", "compileall", "-q", "tinydb"], cwd=self.repo,
-                           capture_output=True, text=True)
-        if p.returncode:
-            return False, f"compileall failed:\n{p.stdout[-3000:]}{p.stderr[-3000:]}"
-        p = subprocess.run([sys.executable, "-c", "import tinydb"], cwd=self.repo,
-                           capture_output=True, text=True)
-        if p.returncode:
-            return False, f"import tinydb failed:\n{p.stderr[-3000:]}"
+        # model-written code: run sandboxed, never with the runner's secrets (ADR-005)
+        code, out = sandbox_run([sys.executable, "-m", "compileall", "-q", "tinydb"], self.repo, 120,
+                                {"PYTHONPATH": str(self.repo)})
+        if code:
+            return False, f"compileall failed:\n{out[-3000:]}"
+        code, out = sandbox_run([sys.executable, "-c", "import tinydb"], self.repo, 60,
+                                {"PYTHONPATH": str(self.repo)})
+        if code:
+            return False, f"import tinydb failed:\n{out[-3000:]}"
         return True, f"build ok; changed: {code_paths}"
 
     def write_diff(self) -> None:
@@ -271,6 +272,10 @@ class Controller:
         task = (f"Write `{test_file}` for issue #{self.n}.\n\n<acceptance_criteria>\n" +
                 "\n\n".join(f"### {b}" for b in acs.values()) +
                 f"\n</acceptance_criteria>\n\n<public_interface>\n{iface}\n</public_interface>\n")
+        cur = self.repo / test_file
+        if cur.exists():
+            task += (f"\n<current_test_file path=\"{test_file}\">\n{cur.read_text()}\n</current_test_file>\n"
+                     "write_file overwrites the whole file: keep the existing tests you want to keep.\n")
         if feedback:
             task += f"\n<feedback>\n{feedback}\n</feedback>\n"
         res = run_agent(role="tester", model=WORKER, system=prompt("tester", TEST_FILE=test_file),
@@ -376,22 +381,46 @@ class Controller:
     def commit(self) -> None:
         branch = f"autose/issue-{self.n}" + ("" if self.a.variant == "default" else f"-{self.a.variant}")
         checks.git(self.repo, "add", "-A", "--", "tinydb", "tests", "docs", check=False)
+        if subprocess.run(["git", "diff", "--cached", "--quiet", "HEAD"], cwd=self.repo).returncode == 0:
+            raise Stop("test", "this round produced no change to commit (nothing new for the reviewer)")
         env = dict(os.environ, GIT_AUTHOR_NAME="autose-bot", GIT_AUTHOR_EMAIL="autose-bot@users.noreply.github.com",
                    GIT_COMMITTER_NAME="autose-bot", GIT_COMMITTER_EMAIL="autose-bot@users.noreply.github.com")
         subprocess.run(["git", "commit", "-q", "-m", f"autose: changes for #{self.n} (round {self.a.round})"],
                        cwd=self.repo, env=env, check=True)
-        checks.git(self.repo, "branch", "-f", branch, "HEAD")
+        current = checks.git(self.repo, "rev-parse", "--abbrev-ref", "HEAD").strip()
+        if current != branch:  # in rework mode we are already on the branch
+            checks.git(self.repo, "branch", "-f", branch, "HEAD")
         subprocess.run(["git", "bundle", "create", str(self.run / "branch.bundle"), f"{self.base}..{branch}"],
                        cwd=self.repo, check=True, capture_output=True)
         self.state["branch"] = branch
         self.state["head"] = checks.git(self.repo, "rev-parse", "HEAD").strip()
+
+    @staticmethod
+    def review_feedback(path: Path) -> str:
+        """Controller-written structured excerpt of the review (ADR-003): the findings
+        and the unmet requirements, not the reviewer's prose or tool log."""
+        if not path.exists():
+            return ""
+        if path.suffix != ".json":
+            return path.read_text()[:6000]
+        v = json.loads(path.read_text())
+        L = ["Findings:"]
+        for f in v.get("findings", []):
+            loc = f"{f.get('file')}:{f.get('line')}" if f.get("file") else "-"
+            L.append(f"- [{f.get('severity')}/{f.get('target')}] {loc}: {f.get('problem')}"
+                     + (f" (suggestion: {f.get('suggestion')})" if f.get("suggestion") else ""))
+        unmet = [r for r in v.get("requirements", []) if r.get("status") != "met"]
+        if unmet:
+            L.append("Requirements the reviewer found not met / unclear:")
+            L += [f"- {r.get('id')}: {r.get('text')} — {r.get('status')}: {r.get('evidence', '')[:400]}" for r in unmet]
+        return "\n".join(L)
 
     def main(self) -> int:
         try:
             if not self.a.skip_model_check:
                 check_models(WORKER)
             mode, target = self.a.mode, self.a.target
-            fb = Path(self.a.feedback_file).read_text() if self.a.feedback_file else ""
+            fb = self.review_feedback(Path(self.a.feedback_file)) if self.a.feedback_file else ""
             if mode == "full":
                 self.note("START", "SPEC", f"issue #{self.n}, round {self.a.round}")
                 self.stage_spec()

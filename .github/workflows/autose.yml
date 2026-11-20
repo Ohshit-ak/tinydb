@@ -118,7 +118,8 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: "${{ env.PYTHON_VERSION }}" }
       - name: Install (pinned)
-        run: python -m pip install -q -r autose/requirements.txt -e .
+        # no `pip install -e .`: tinydb is imported via PYTHONPATH, so no build backend from the checkout runs
+        run: python -m pip install -q -r autose/requirements.txt
       - name: Create sandbox user for model-written code (ADR-005)
         run: bash autose/setup_sandbox.sh
       - name: Previous round artifacts (rework only)
@@ -143,7 +144,7 @@ jobs:
           ARGS=(--issue "$ISSUE" --mode "$MODE" --round "$ROUND" --target "$TARGET" --variant "$VARIANT")
           if [ "$MODE" = "rework" ]; then
             BASE=$(python -c 'import json;print(json.load(open(".autose-run/prev/state.json"))["base"])')
-            ARGS+=(--base "$BASE" --prev-dir .autose-run/prev --feedback-file .autose-run/prev/review.md)
+            ARGS+=(--base "$BASE" --prev-dir .autose-run/prev --feedback-file .autose-run/prev/verdict.json)
           fi
           git config user.name autose-bot
           git config user.email autose-bot@users.noreply.github.com
@@ -266,7 +267,7 @@ jobs:
       always() && needs.gate.outputs.proceed == 'true' &&
       (needs.gate.outputs.mode == 'review-only' || needs.ci.result == 'success')
     concurrency:  # one active review job per issue; later triggers queue (ADR-010)
-      group: autose-review-${{ needs.gate.outputs.issue }}
+      group: autose-review-${{ needs.gate.outputs.pr || needs.gate.outputs.issue }}
       cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -290,7 +291,9 @@ jobs:
         run: |
           git fetch -q origin "$DEFAULT_BRANCH"
           rm -rf autose && git checkout FETCH_HEAD -- autose && git reset -q autose
-          python -m pip install -q -r autose/requirements.txt -e .
+          # never `pip install -e .` on PR code: a hostile build backend could poison $GITHUB_ENV
+          python -m pip install -q -r autose/requirements.txt
+          echo "PYTHONPATH=$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
           bash autose/setup_sandbox.sh
       - id: rev
         env:
@@ -312,7 +315,7 @@ jobs:
     needs: [gate, review]
     if: always() && needs.review.result == 'success'
     concurrency:  # one active post-review job per issue; later triggers queue (ADR-010)
-      group: autose-post-review-${{ needs.gate.outputs.issue }}
+      group: autose-post-review-${{ needs.gate.outputs.pr || needs.gate.outputs.issue }}
       cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -337,13 +340,17 @@ jobs:
           AUTOSE_DISPATCH_REF: ${{ github.event.repository.default_branch }}
         run: python -m autose.post_review --dir review-out --mode "$MODE"
 
-  ci-failed:
+  ci-status:
+    # Stage 5 check result made visible on the PR: the reusable CI job's checks attach to the
+    # triggering commit, so post a commit status on the PR head. No model key.
     needs: [gate, release, ci]
-    if: always() && needs.release.outputs.status == 'released' && needs.ci.result != 'success'
+    if: always() && needs.release.outputs.status == 'released'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
+      statuses: write
       issues: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
         with: { sparse-checkout: autose, persist-credentials: false }
@@ -354,11 +361,18 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ISSUE: ${{ needs.gate.outputs.issue }}
           PR: ${{ needs.release.outputs.pr }}
+          HEAD: ${{ needs.release.outputs.head }}
+          CI_RESULT: ${{ needs.ci.result }}
         run: |
           python - <<'EOF'
           import os
           from autose import gh
-          n, pr = int(os.environ["ISSUE"]), os.environ["PR"]
-          gh.comment(n, f"{gh.BOT_PREFIX} — **stage 5 stopped**: CI failed on PR #{pr}, so no review was run. Run: {gh.run_url()}")
-          gh.add_labels(int(pr), ["autose:failed"])
+          ok = os.environ["CI_RESULT"] == "success"
+          gh.call("POST", f"/repos/{gh.repo()}/statuses/{os.environ['HEAD']}",
+                  json={"state": "success" if ok else "failure", "context": "AutoSE CI (stage 5)",
+                        "description": f"ci.yml on PR head: {os.environ['CI_RESULT']}", "target_url": gh.run_url()})
+          if not ok:
+              n, pr = int(os.environ["ISSUE"]), os.environ["PR"]
+              gh.comment(n, f"{gh.BOT_PREFIX} — **stage 5 stopped**: CI failed on PR #{pr}, so no review was run. Run: {gh.run_url()}")
+              gh.add_labels(int(pr), ["autose:failed"])
           EOF

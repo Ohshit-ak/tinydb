@@ -103,8 +103,9 @@ def main() -> int:
                     ["requirements", "verdict", "summary"])]
     res = run_agent(role="reviewer", model=model, system=system, task=task, tools=tools,
                     usage=usage, max_steps=30, temperature=0.2)
-    v = res.submitted or {"verdict": "request_changes", "target": "implementation", "requirements": [],
-                          "findings": [], "summary": f"Reviewer did not submit ({res.stop_reason})."}
+    # A review that never finished is inconclusive: no rework is dispatched, a human looks (post_review).
+    v = res.submitted or {"verdict": "inconclusive", "target": "none", "requirements": [],
+                          "findings": [], "summary": f"Reviewer did not submit a verdict ({res.stop_reason})."}
     v.setdefault("findings", [])
 
     # Evidence guard (ADR-007): approval needs a real test run in the harness's own log.
@@ -114,7 +115,7 @@ def main() -> int:
         guard = "approval downgraded to request_changes — no `run_tests` call or no requirements checked."
         v["verdict"] = "request_changes"
         v["target"] = v.get("target") if v.get("target") not in (None, "none") else "tests"
-    if v["verdict"] == "request_changes" and v.get("target") in (None, "none", ""):
+    if v["verdict"] == "request_changes" and v.get("target") in (None, "none", ""):  # route somewhere
         sev = [f for f in v["findings"] if f.get("severity") in ("blocker", "major")] or v["findings"]
         v["target"] = sev[0]["target"] if sev else "implementation"
     meta = {"round": a.round, "model": model, "variant": a.variant, "steps": res.steps,

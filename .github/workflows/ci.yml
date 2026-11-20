@@ -1,7 +1,7 @@
 # Trimmed CI for the AutoSE fork: one OS, one Python, no coveralls/publish.
 # It runs on human pushes/PRs, and the AutoSE workflow calls it as a reusable
 # workflow on the bot's branch (PRs opened with GITHUB_TOKEN do not trigger
-# `pull_request` workflows, see ADR-005 / ADR-011 in the submission repo).
+# `pull_request` workflows; see ADR-005 in the submission repo).
 name: CI
 
 on:
