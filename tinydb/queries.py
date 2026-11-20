@@ -25,6 +25,17 @@ from .utils import freeze
 __all__ = ('Query', 'QueryLike', 'where')
 
 
+def _safe_compare(value, rhs, op):
+    """Compare values of possibly different types without crashing."""
+    try:
+        a, b = value, rhs
+        if type(a) is not type(b):
+            a, b = str(a), str(b)
+        return {'<': a < b, '<=': a <= b, '>': a > b, '>=': a >= b}[op]
+    except TypeError:
+        return False
+
+
 def is_sequence(obj):
     # Exclude str/bytes: they are iterable Sequences but document fields that
     # are strings should not match any/all as if they were char lists (#638).
@@ -286,7 +297,7 @@ class Query(QueryInstance):
         :param rhs: The value to compare against
         """
         return self._generate_test(
-            lambda value: value < rhs,
+            lambda value: _safe_compare(value, rhs, '<'),
             ('<', self._path, rhs)
         )
 
@@ -299,7 +310,7 @@ class Query(QueryInstance):
         :param rhs: The value to compare against
         """
         return self._generate_test(
-            lambda value: value <= rhs,
+            lambda value: _safe_compare(value, rhs, '<='),
             ('<=', self._path, rhs)
         )
 
@@ -312,7 +323,7 @@ class Query(QueryInstance):
         :param rhs: The value to compare against
         """
         return self._generate_test(
-            lambda value: value > rhs,
+            lambda value: _safe_compare(value, rhs, '>'),
             ('>', self._path, rhs)
         )
 
@@ -325,7 +336,7 @@ class Query(QueryInstance):
         :param rhs: The value to compare against
         """
         return self._generate_test(
-            lambda value: value >= rhs,
+            lambda value: _safe_compare(value, rhs, '>='),
             ('>=', self._path, rhs)
         )
 
