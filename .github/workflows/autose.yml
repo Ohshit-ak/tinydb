@@ -1,0 +1,364 @@
+# AutoSE: issue in, reviewed pull request out.
+# Design: see the submission repo, architecture/decisions/ADR-001..010.
+#
+# Security notes (ADR-009):
+#  * top-level permissions are empty; each job gets only what it needs (ADR-005)
+#  * no ${{ github.event.* }} text is interpolated into `run:` scripts; issue and
+#    comment bodies are read by Python from the event file / REST API
+#  * the model key exists only in `agents` and `review`, whose tokens cannot write
+name: AutoSE
+
+on:
+  issues:
+    types: [labeled]
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: full | rework | review-only
+        default: full
+        type: choice
+        options: [full, rework, review-only]
+      issue:
+        description: issue number
+        required: true
+      pr:
+        description: PR number (rework / review-only)
+        default: ""
+      round:
+        description: review round (1 = initial build)
+        default: "1"
+      target:
+        description: rework target stage
+        default: implementation
+        type: choice
+        options: [design, implementation, tests]
+      variant:
+        description: pipeline variant (decision experiment 2)
+        default: default
+        type: choice
+        options: [default, single-pass]
+      reviewer_variant:
+        description: reviewer variant (decision experiment 1)
+        default: independent
+        type: choice
+        options: [independent, coupled]
+      prev_run:
+        description: run id holding the previous round's artifacts
+        default: ""
+
+permissions: {}
+
+env:
+  AUTOSE_WORKER_MODEL: ${{ vars.AUTOSE_WORKER_MODEL || 'gemini-2.5-flash' }}
+  AUTOSE_REVIEWER_MODEL: ${{ vars.AUTOSE_REVIEWER_MODEL || 'gemini-2.5-pro' }}
+  AUTOSE_TOKEN_CAP: ${{ vars.AUTOSE_TOKEN_CAP || '2000000' }}
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  gate:
+    # cheap pre-filter; the gate script re-checks everything (ADR-010)
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'issues' && github.event.label.name == 'autose') ||
+      (github.event_name == 'issue_comment' && startsWith(github.event.comment.body, '/autose') &&
+       github.event.comment.user.type != 'Bot')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write          # ack comment only
+      pull-requests: read
+    outputs:
+      proceed: ${{ steps.g.outputs.proceed }}
+      mode: ${{ steps.g.outputs.mode }}
+      issue: ${{ steps.g.outputs.issue }}
+      pr: ${{ steps.g.outputs.pr }}
+      round: ${{ steps.g.outputs.round }}
+      target: ${{ steps.g.outputs.target }}
+      variant: ${{ steps.g.outputs.variant }}
+      reviewer_variant: ${{ steps.g.outputs.reviewer_variant }}
+      prev_run: ${{ steps.g.outputs.prev_run }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: autose
+      - uses: actions/setup-python@v5
+        with: { python-version: "${{ env.PYTHON_VERSION }}" }
+      - run: pip install -q requests==2.32.3
+      - id: g
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python -m autose.gate
+
+  agents:
+    # Stages 1-4: Analyst, Architect, Builder, Tester, driven by the Controller (ADR-002)
+    needs: gate
+    if: needs.gate.outputs.proceed == 'true' && needs.gate.outputs.mode != 'review-only'
+    concurrency:  # one active agents job per issue; later triggers queue (ADR-010)
+      group: autose-agents-${{ needs.gate.outputs.issue }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      issues: read
+      actions: read          # download previous round's artifacts
+    outputs:
+      status: ${{ steps.ctl.outputs.status }}
+      branch: ${{ steps.ctl.outputs.branch }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.mode == 'rework' && format('autose/issue-{0}{1}', needs.gate.outputs.issue, needs.gate.outputs.variant != 'default' && format('-{0}', needs.gate.outputs.variant) || '') || github.event.repository.default_branch }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with: { python-version: "${{ env.PYTHON_VERSION }}" }
+      - name: Install (pinned)
+        run: python -m pip install -q -r autose/requirements.txt -e .
+      - name: Create sandbox user for model-written code (ADR-005)
+        run: bash autose/setup_sandbox.sh
+      - name: Previous round artifacts (rework only)
+        if: needs.gate.outputs.mode == 'rework'
+        uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ needs.gate.outputs.prev_run }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: .autose-run/prev
+          merge-multiple: true
+      - name: Controller
+        id: ctl
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE: ${{ needs.gate.outputs.issue }}
+          MODE: ${{ needs.gate.outputs.mode }}
+          ROUND: ${{ needs.gate.outputs.round }}
+          TARGET: ${{ needs.gate.outputs.target }}
+          VARIANT: ${{ needs.gate.outputs.variant }}
+        run: |
+          ARGS=(--issue "$ISSUE" --mode "$MODE" --round "$ROUND" --target "$TARGET" --variant "$VARIANT")
+          if [ "$MODE" = "rework" ]; then
+            BASE=$(python -c 'import json;print(json.load(open(".autose-run/prev/state.json"))["base"])')
+            ARGS+=(--base "$BASE" --prev-dir .autose-run/prev --feedback-file .autose-run/prev/review.md)
+          fi
+          git config user.name autose-bot
+          git config user.email autose-bot@users.noreply.github.com
+          python -m autose.controller "${ARGS[@]}"
+      - name: Upload stage artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: autose-issue-${{ needs.gate.outputs.issue }}-r${{ needs.gate.outputs.round }}
+          path: |
+            .autose-run/*.md
+            .autose-run/*.patch
+            .autose-run/state.json
+            .autose-run/usage.jsonl
+            .autose-run/branch.bundle
+            .autose-run/agent_logs/
+          if-no-files-found: warn
+      - name: Report a stopped run
+        if: steps.ctl.outputs.status != 'done'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python - <<'EOF'
+          import json
+          st = json.load(open(".autose-run/state.json"))
+          print("STOPPED:", st.get("stopped_stage"), st.get("stopped_reason"))
+          EOF
+
+  notify-stopped:
+    needs: [gate, agents]
+    if: always() && needs.gate.outputs.proceed == 'true' && needs.gate.outputs.mode != 'review-only' && needs.agents.outputs.status != 'done'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with: { sparse-checkout: autose, persist-credentials: false }
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: autose-issue-${{ needs.gate.outputs.issue }}-r${{ needs.gate.outputs.round }}
+          path: .autose-run
+      - uses: actions/setup-python@v5
+        with: { python-version: "${{ env.PYTHON_VERSION }}" }
+      - run: pip install -q requests==2.32.3
+      - env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE: ${{ needs.gate.outputs.issue }}
+        run: |
+          python - <<'EOF'
+          import json, os
+          from autose import gh
+          n = int(os.environ["ISSUE"])
+          try:
+              st = json.load(open(".autose-run/state.json"))
+              why = f"stage **{st.get('stopped_stage')}**: {st.get('stopped_reason', '')[:1500]}"
+          except Exception:
+              why = "the agents job failed before writing state (see the run log)"
+          gh.comment(n, f"{gh.BOT_PREFIX} — run stopped at {why}\n\nThe stage artifact explains why. Run: {gh.run_url()}")
+          gh.add_labels(n, ["autose:failed"])
+          EOF
+
+  release:
+    # Stage 5: deterministic push + PR. Holds the write token, never the model key.
+    needs: [gate, agents]
+    if: needs.agents.outputs.status == 'done'
+    concurrency:  # one active release job per issue; later triggers queue (ADR-010)
+      group: autose-release-${{ needs.gate.outputs.issue }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    outputs:
+      pr: ${{ steps.rel.outputs.pr }}
+      head: ${{ steps.rel.outputs.head }}
+      status: ${{ steps.rel.outputs.status }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          name: autose-issue-${{ needs.gate.outputs.issue }}-r${{ needs.gate.outputs.round }}
+          path: .autose-run
+      - uses: actions/setup-python@v5
+        with: { python-version: "${{ env.PYTHON_VERSION }}" }
+      - run: pip install -q requests==2.32.3
+      - id: rel
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python -m autose.release
+      - name: Upload pr.md
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ needs.gate.outputs.issue }}-r${{ needs.gate.outputs.round }}
+          path: .autose-run/pr.md
+
+  ci:
+    # Stage 5 check. PRs opened with GITHUB_TOKEN do not trigger `pull_request`
+    # workflows, so CI is called explicitly on the PR head (ADR-005).
+    needs: [release]
+    if: needs.release.outputs.status == 'released'
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ needs.release.outputs.head }}
+    permissions:
+      contents: read
+
+  review:
+    # Stage 6: independent reviewer. Fresh runner, read-only token, different model (ADR-008).
+    needs: [gate, release, ci]
+    if: >-
+      always() && needs.gate.outputs.proceed == 'true' &&
+      (needs.gate.outputs.mode == 'review-only' || needs.ci.result == 'success')
+    concurrency:  # one active review job per issue; later triggers queue (ADR-010)
+      group: autose-review-${{ needs.gate.outputs.issue }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+    outputs:
+      verdict: ${{ steps.rev.outputs.verdict }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release.outputs.head || format('refs/pull/{0}/head', needs.gate.outputs.pr) }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with: { python-version: "${{ env.PYTHON_VERSION }}" }
+      - name: Install reviewer harness from the default branch (the PR cannot change it)
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          git fetch -q origin "$DEFAULT_BRANCH"
+          rm -rf autose && git checkout FETCH_HEAD -- autose && git reset -q autose
+          python -m pip install -q -r autose/requirements.txt -e .
+          bash autose/setup_sandbox.sh
+      - id: rev
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ needs.release.outputs.pr || needs.gate.outputs.pr }}
+          ISSUE: ${{ needs.gate.outputs.issue }}
+          ROUND: ${{ needs.gate.outputs.round }}
+          RVARIANT: ${{ needs.gate.outputs.reviewer_variant }}
+        run: python -m autose.review --pr "$PR" --issue "$ISSUE" --round "$ROUND" --variant "$RVARIANT" --out review-out
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: review-${{ needs.gate.outputs.issue }}-r${{ needs.gate.outputs.round }}-${{ needs.gate.outputs.reviewer_variant }}
+          path: review-out/
+
+  post-review:
+    # Posts the review (COMMENT, never APPROVE) and dispatches the next round. No model key.
+    needs: [gate, review]
+    if: always() && needs.review.result == 'success'
+    concurrency:  # one active post-review job per issue; later triggers queue (ADR-010)
+      group: autose-post-review-${{ needs.gate.outputs.issue }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+      issues: write
+      actions: write         # workflow_dispatch for the next review round
+    steps:
+      - uses: actions/checkout@v4
+        with: { sparse-checkout: autose, persist-credentials: false }
+      - uses: actions/download-artifact@v4
+        with:
+          name: review-${{ needs.gate.outputs.issue }}-r${{ needs.gate.outputs.round }}-${{ needs.gate.outputs.reviewer_variant }}
+          path: review-out
+      - uses: actions/setup-python@v5
+        with: { python-version: "${{ env.PYTHON_VERSION }}" }
+      - run: pip install -q requests==2.32.3
+      - env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MODE: ${{ needs.gate.outputs.mode }}
+          AUTOSE_VARIANT: ${{ needs.gate.outputs.variant }}
+          AUTOSE_DISPATCH_REF: ${{ github.event.repository.default_branch }}
+        run: python -m autose.post_review --dir review-out --mode "$MODE"
+
+  ci-failed:
+    needs: [gate, release, ci]
+    if: always() && needs.release.outputs.status == 'released' && needs.ci.result != 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with: { sparse-checkout: autose, persist-credentials: false }
+      - uses: actions/setup-python@v5
+        with: { python-version: "${{ env.PYTHON_VERSION }}" }
+      - run: pip install -q requests==2.32.3
+      - env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE: ${{ needs.gate.outputs.issue }}
+          PR: ${{ needs.release.outputs.pr }}
+        run: |
+          python - <<'EOF'
+          import os
+          from autose import gh
+          n, pr = int(os.environ["ISSUE"]), os.environ["PR"]
+          gh.comment(n, f"{gh.BOT_PREFIX} — **stage 5 stopped**: CI failed on PR #{pr}, so no review was run. Run: {gh.run_url()}")
+          gh.add_labels(int(pr), ["autose:failed"])
+          EOF
