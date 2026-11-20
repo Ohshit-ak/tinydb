@@ -19,8 +19,9 @@ from .controller import fence, prompt
 from .llm import Usage, check_models, run_agent
 from .tools import Jail, read_tools, run_tools, submit_tool
 
-REVIEWER = os.environ.get("AUTOSE_REVIEWER_MODEL") or "gemini-2.5-pro"
-WORKER = os.environ.get("AUTOSE_WORKER_MODEL") or "gemini-2.5-flash"
+REVIEWER = os.environ.get("AUTOSE_REVIEWER_MODEL") or "gemini-3.6-flash"
+REVIEWER_THINK = os.environ.get("AUTOSE_REVIEWER_THINKING", "")  # model default (deeper) for the reviewer
+WORKER = os.environ.get("AUTOSE_WORKER_MODEL") or "gemini-3.5-flash"
 
 REVIEW_SCHEMA = {
     "requirements": {"type": "array", "items": {"type": "object", "properties": {
@@ -102,7 +103,8 @@ def main() -> int:
         submit_tool("submit_review", "Submit the review verdict.", REVIEW_SCHEMA,
                     ["requirements", "verdict", "summary"])]
     res = run_agent(role="reviewer", model=model, system=system, task=task, tools=tools,
-                    usage=usage, max_steps=30, temperature=0.2)
+                    usage=usage, max_steps=30, temperature=0.2,
+                    thinking=REVIEWER_THINK if a.variant == "independent" else os.environ.get("AUTOSE_WORKER_THINKING", "low"))
     # A review that never finished is inconclusive: no rework is dispatched, a human looks (post_review).
     v = res.submitted or {"verdict": "inconclusive", "target": "none", "requirements": [],
                           "findings": [], "summary": f"Reviewer did not submit a verdict ({res.stop_reason})."}

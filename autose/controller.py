@@ -21,13 +21,14 @@ import time
 from pathlib import Path
 
 from . import checks
-from .llm import AgentStuck, BudgetExceeded, Usage, check_models, one_shot, run_agent
+from .llm import AgentStuck, BudgetExceeded, QuotaExhausted, Usage, check_models, one_shot, run_agent
 from .tools import Jail, read_tools, run_pytest, run_tools, sandbox_run, submit_tool, write_tools
 
 PKG = Path(__file__).resolve().parent
 PROMPTS = PKG / "prompts"
 
-WORKER = os.environ.get("AUTOSE_WORKER_MODEL") or "gemini-2.5-flash"
+WORKER = os.environ.get("AUTOSE_WORKER_MODEL") or "gemini-3.5-flash"
+THINK = os.environ.get("AUTOSE_WORKER_THINKING", "low")  # ADR-011: latency
 TOKEN_CAP = int(os.environ.get("AUTOSE_TOKEN_CAP") or 2_000_000)
 STEPS = {"analyst": 15, "architect": 20, "builder": 40, "tester": 25}
 
@@ -124,7 +125,7 @@ class Controller:
                             tools=read_tools(Jail(self.repo)) + [submit_tool(
                                 "submit", "Submit the finished spec.md.",
                                 {"spec_md": {"type": "string"}}, ["spec_md"])],
-                            usage=self.usage, max_steps=STEPS["analyst"])
+                            usage=self.usage, thinking=THINK, max_steps=STEPS["analyst"])
             self.dump_log("analyst", attempt, res)
             spec = (res.submitted or {}).get("spec_md", "")
             if not spec:
@@ -138,7 +139,7 @@ class Controller:
                 raw = one_shot(WORKER, prompt("spec_judge"),
                                "Acceptance criteria to judge:\n\n" +
                                "\n\n".join(f"### {b}" for b in acs.values()),
-                               self.usage, "spec_judge", json_mode=True)
+                               self.usage, "spec_judge", json_mode=True, thinking=THINK)
                 ok_judge, rep_judge, judge = checks.parse_judge(raw, acs)
             report = "\n".join(f"- {l}" for l in rep_lint + rep_judge)
             spec_out = spec + ("\n\n---\n## Appendix — stage 1 check (Controller)\n"
@@ -176,7 +177,7 @@ class Controller:
                             tools=read_tools(Jail(self.repo)) + [submit_tool(
                                 "submit", "Submit the finished design.md.",
                                 {"design_md": {"type": "string"}}, ["design_md"])],
-                            usage=self.usage, max_steps=STEPS["architect"])
+                            usage=self.usage, thinking=THINK, max_steps=STEPS["architect"])
             self.dump_log("architect", len(list((self.run / "agent_logs").glob("architect-*"))) + 1, res)
             design = (res.submitted or {}).get("design_md", "")
             if not design:
@@ -206,7 +207,7 @@ class Controller:
                         tools=read_tools(jail) + write_tools(jail) + run_tools(jail, build=True) +
                         [submit_tool("submit", "Finish implementation.", {"summary": {"type": "string"}},
                                      ["summary"])],
-                        usage=self.usage, max_steps=STEPS["builder"])
+                        usage=self.usage, thinking=THINK, max_steps=STEPS["builder"])
         self.dump_log("builder", attempt, res)
         return (res.submitted or {}).get("summary", f"(no submit: {res.stop_reason})")
 
@@ -279,7 +280,7 @@ class Controller:
         if feedback:
             task += f"\n<feedback>\n{feedback}\n</feedback>\n"
         res = run_agent(role="tester", model=WORKER, system=prompt("tester", TEST_FILE=test_file),
-                        task=task, tools=tools, usage=self.usage, max_steps=STEPS["tester"])
+                        task=task, tools=tools, usage=self.usage, thinking=THINK, max_steps=STEPS["tester"])
         self.dump_log("tester", attempt, res)
         return (res.submitted or {}).get("summary", f"(no submit: {res.stop_reason})")
 
@@ -447,7 +448,7 @@ class Controller:
             with (self.run / art).open("a") as f:
                 f.write(f"\n\n## STOPPED\nThe Controller stopped the run at this stage.\n\nReason:\n{s.reason}\n")
             self.note(s.stage.upper(), "STOPPED", s.reason[:300])
-        except (BudgetExceeded, AgentStuck) as e:
+        except (BudgetExceeded, AgentStuck, QuotaExhausted) as e:
             self.state.update(status="stopped", stopped_stage="budget", stopped_reason=str(e))
             self.write("STOPPED.md", f"# STOPPED\n\n{e}\n")
             self.note("ANY", "STOPPED", str(e))

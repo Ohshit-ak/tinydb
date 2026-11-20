@@ -51,8 +51,9 @@ on:
 permissions: {}
 
 env:
-  AUTOSE_WORKER_MODEL: ${{ vars.AUTOSE_WORKER_MODEL || 'gemini-2.5-flash' }}
-  AUTOSE_REVIEWER_MODEL: ${{ vars.AUTOSE_REVIEWER_MODEL || 'gemini-2.5-pro' }}
+  AUTOSE_WORKER_MODEL: ${{ vars.AUTOSE_WORKER_MODEL || 'gemini-3.5-flash' }}
+  AUTOSE_REVIEWER_MODEL: ${{ vars.AUTOSE_REVIEWER_MODEL || 'gemini-3.6-flash' }}
+  AUTOSE_WORKER_THINKING: ${{ vars.AUTOSE_WORKER_THINKING || 'low' }}
   AUTOSE_TOKEN_CAP: ${{ vars.AUTOSE_TOKEN_CAP || '2000000' }}
   PYTHON_VERSION: "3.12"
 
@@ -101,7 +102,7 @@ jobs:
       group: autose-agents-${{ needs.gate.outputs.issue }}
       cancel-in-progress: false
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 120
     permissions:
       contents: read
       issues: read
@@ -270,7 +271,7 @@ jobs:
       group: autose-review-${{ needs.gate.outputs.pr || needs.gate.outputs.issue }}
       cancel-in-progress: false
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 60
     permissions:
       contents: read
       issues: read

@@ -27,6 +27,11 @@ class AgentStuck(RuntimeError):
     pass
 
 
+class QuotaExhausted(RuntimeError):
+    """A daily/plan quota (not a transient rate limit): retrying cannot help (ADR-009)."""
+    pass
+
+
 @dataclass
 class Tool:
     name: str
@@ -112,6 +117,9 @@ def _generate(model: str, contents: list, config: types.GenerateContentConfig):
                 model=model, contents=contents, config=config)
         except genai_errors.APIError as e:  # ClientError / ServerError
             code = getattr(e, "code", None)
+            msg = str(e)
+            if code == 429 and ("PerDay" in msg or "billing" in msg.lower() and "free_tier" in msg.lower()):
+                raise QuotaExhausted(f"{model}: daily quota exhausted — {msg[:300]}") from e
             if code in (429, 500, 502, 503, 504) and attempt < 6:
                 time.sleep(delay + random.random())
                 delay = min(delay * 2, 64)
@@ -120,12 +128,18 @@ def _generate(model: str, contents: list, config: types.GenerateContentConfig):
     raise RuntimeError("unreachable")
 
 
+def _thinking(level: str | None):
+    # "" / None = model default; otherwise "low" | "medium" | "high" (ADR-011)
+    return types.ThinkingConfig(thinking_level=level) if level else None
+
+
 def one_shot(model: str, system: str, prompt: str, usage: Usage, role: str,
-             temperature: float = 0.0, json_mode: bool = False) -> str:
+             temperature: float = 0.0, json_mode: bool = False, thinking: str | None = None) -> str:
     cfg = types.GenerateContentConfig(
         system_instruction=system,
         temperature=temperature,
         response_mime_type="application/json" if json_mode else None,
+        thinking_config=_thinking(thinking),
     )
     resp = _generate(model, [types.Content(role="user", parts=[types.Part(text=prompt)])], cfg)
     usage.add(role, model, resp.usage_metadata)
@@ -134,8 +148,8 @@ def one_shot(model: str, system: str, prompt: str, usage: Usage, role: str,
 
 def run_agent(*, role: str, model: str, system: str, task: str,
               tools: list[Tool], usage: Usage, max_steps: int,
-              temperature: float = 0.2, log: Callable[[str], None] = print
-              ) -> AgentResult:
+              temperature: float = 0.2, log: Callable[[str], None] = print,
+              thinking: str | None = None) -> AgentResult:
     """Run one ReAct-style tool loop until a terminal tool is called."""
     decls = [types.FunctionDeclaration(name=t.name, description=t.description,
                                        parameters_json_schema=t.parameters)
@@ -147,6 +161,7 @@ def run_agent(*, role: str, model: str, system: str, task: str,
         tools=[types.Tool(function_declarations=decls)],
         automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
         tool_config=types.ToolConfig(function_calling_config=types.FunctionCallingConfig(mode="ANY")),
+        thinking_config=_thinking(thinking),
     )
     contents: list = [types.Content(role="user", parts=[types.Part(text=task)])]
     result = AgentResult(submitted=None, steps=0)
