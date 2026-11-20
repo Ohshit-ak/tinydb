@@ -1,0 +1,39 @@
+# Trimmed CI for the AutoSE fork: one OS, one Python, no coveralls/publish.
+# It runs on human pushes/PRs, and the AutoSE workflow calls it as a reusable
+# workflow on the bot's branch (PRs opened with GITHUB_TOKEN do not trigger
+# `pull_request` workflows, see ADR-005 / ADR-011 in the submission repo).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        description: git ref (branch or sha) to test
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: python -m pip install -q -e . pytest pytest-cov
+      - name: Build check (byte-compile)
+        run: python -m compileall -q tinydb
+      - name: Test suite
+        run: python -m pytest -q -p no:cacheprovider
