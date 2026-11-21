@@ -227,8 +227,13 @@ class Table:
                 doc_ids.append(doc_id)
                 table[doc_id] = dict(document)
 
-        # See below for details on ``Table._update``
-        self._update_table(updater)
+        previous_next_id = self._next_id
+        try:
+            # See below for details on ``Table._update``
+            self._update_table(updater)
+        except Exception:
+            self._next_id = previous_next_id
+            raise
 
         return doc_ids
 
