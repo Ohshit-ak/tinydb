@@ -183,6 +183,13 @@ def _try_pool(model: str, contents: list, config, tried: list):
                 if code in (500, 502, 503, 504):  # still unavailable: try the next model
                     break
                 raise
+            except Exception as e:  # transport errors (connection reset, server disconnected, timeouts)
+                if attempt < 4:
+                    print(f"[llm] transport error on {m}: {type(e).__name__}; retrying", flush=True)
+                    time.sleep(delay + random.random())
+                    delay = min(delay * 2, 32)
+                    continue
+                break
     return None
 
 
