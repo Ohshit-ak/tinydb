@@ -82,17 +82,23 @@ class Usage:
                 f"token budget exceeded: {self.total} > {self.cap}")
 
 
-_client: genai.Client | None = None
+_clients: list[genai.Client] = []
+_key_idx = 0  # index of the key currently in use
+
+
+def _keys() -> list[str]:
+    keys = [k.strip() for k in (os.environ.get("GEMINI_API_KEYS") or "").split(",") if k.strip()]
+    if not keys and os.environ.get("GEMINI_API_KEY"):
+        keys = [os.environ["GEMINI_API_KEY"]]
+    if not keys:
+        raise RuntimeError("no Gemini key: set GEMINI_API_KEYS (or GEMINI_API_KEY)")
+    return keys
 
 
 def client() -> genai.Client:
-    global _client
-    if _client is None:
-        key = os.environ.get("GEMINI_API_KEY")
-        if not key:
-            raise RuntimeError("GEMINI_API_KEY is not set")
-        _client = genai.Client(api_key=key)
-    return _client
+    if not _clients:
+        _clients.extend(genai.Client(api_key=k) for k in _keys())
+    return _clients[_key_idx]
 
 
 def check_models(*model_ids: str) -> None:
@@ -117,15 +123,15 @@ POOLS = [
     [m.strip() for m in (os.environ.get("AUTOSE_REVIEWER_POOL") or
      "gemini-3.1-flash-lite,gemini-3.7-flash,gemini-4-hydrogen").split(",") if m.strip()],
 ]
-_exhausted: set[str] = set()
+_exhausted: set[tuple[int, str]] = set()  # (key index, model)
 
 
 def _candidates(model: str) -> list[str]:
     for pool in POOLS:
         if model in pool:
             i = pool.index(model)
-            return [m for m in pool[i:] + pool[:i] if m not in _exhausted]
-    return [model] if model not in _exhausted else []
+            return [m for m in pool[i:] + pool[:i] if (_key_idx, m) not in _exhausted]
+    return [model] if (_key_idx, model) not in _exhausted else []
 
 
 def _strip_signatures(contents: list) -> None:
@@ -140,7 +146,21 @@ def _strip_signatures(contents: list) -> None:
 def _generate(model: str, contents: list, config: types.GenerateContentConfig):
     """generate_content with backoff on transient errors and pool fallback on exhausted
     quota (ADR-009/011). Returns (response, model actually used)."""
+    global _key_idx
+    client()  # initialise the key list
     tried = []
+    while True:
+        r = _try_pool(model, contents, config, tried)
+        if r is not None:
+            return r
+        if _key_idx + 1 < len(_clients):  # every model of this key is spent: next key
+            _key_idx += 1
+            print(f"[llm] all models exhausted on key #{_key_idx}; switching to key #{_key_idx + 1}", flush=True)
+            continue
+        raise QuotaExhausted(f"all models in the pool of {model} are exhausted/unavailable on all keys today (tried {tried})")
+
+
+def _try_pool(model: str, contents: list, config, tried: list):
     for m in _candidates(model):
         if tried:
             _strip_signatures(contents)
@@ -154,7 +174,7 @@ def _generate(model: str, contents: list, config: types.GenerateContentConfig):
                 code = getattr(e, "code", None)
                 msg = str(e)
                 if code == 429 and ("PerDay" in msg or "free_tier" in msg.lower()):
-                    _exhausted.add(m)
+                    _exhausted.add((_key_idx, m))
                     break
                 if code in (429, 500, 502, 503, 504) and attempt < 4:
                     time.sleep(delay + random.random())
@@ -163,7 +183,7 @@ def _generate(model: str, contents: list, config: types.GenerateContentConfig):
                 if code in (500, 502, 503, 504):  # still unavailable: try the next model
                     break
                 raise
-    raise QuotaExhausted(f"all models in the pool of {model} are exhausted/unavailable today (tried {tried})")
+    return None
 
 
 def _thinking(level: str | None):

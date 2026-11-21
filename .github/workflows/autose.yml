@@ -134,7 +134,8 @@ jobs:
       - name: Controller
         id: ctl
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # worker keys, tried in order when every model of a key is out of free quota (ADR-011)
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEY }},${{ secrets.GEMINI_API_KEY_2 }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ISSUE: ${{ needs.gate.outputs.issue }}
           MODE: ${{ needs.gate.outputs.mode }}
@@ -300,7 +301,8 @@ jobs:
           bash autose/setup_sandbox.sh
       - id: rev
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          # the Reviewer runs on its own Google project/key (ADR-008, ADR-011)
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_REVIEWER_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ needs.release.outputs.pr || needs.gate.outputs.pr }}
           ISSUE: ${{ needs.gate.outputs.issue }}
