@@ -97,7 +97,8 @@ def _keys() -> list[str]:
 
 def client() -> genai.Client:
     if not _clients:
-        _clients.extend(genai.Client(api_key=k) for k in _keys())
+        _clients.extend(genai.Client(api_key=k, http_options=types.HttpOptions(timeout=90_000))  # ms; a hung request becomes a retry
+                        for k in _keys())
     return _clients[_key_idx]
 
 
@@ -119,9 +120,9 @@ def check_models(*model_ids: str) -> None:
 # is spent (or it stays unavailable). Worker and reviewer pools are disjoint (ADR-008).
 POOLS = [
     [m.strip() for m in (os.environ.get("AUTOSE_WORKER_POOL") or
-     "gemini-3.5-flash-lite,gemini-3.5-flash,gemini-3.6-flash,gemini-3.8-flash").split(",") if m.strip()],
+     "gemini-3.5-flash-lite,gemini-3.5-flash,gemini-3.6-flash").split(",") if m.strip()],
     [m.strip() for m in (os.environ.get("AUTOSE_REVIEWER_POOL") or
-     "gemini-3.1-flash-lite,gemini-3.7-flash,gemini-4-hydrogen").split(",") if m.strip()],
+     "gemini-3.1-flash-lite,gemini-3.7-flash,gemini-3.8-flash,gemini-4-hydrogen").split(",") if m.strip()],
 ]
 _exhausted: set[tuple[int, str]] = set()  # (key index, model)
 
