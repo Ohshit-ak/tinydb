@@ -207,6 +207,10 @@ def run_agent(*, role: str, model: str, system: str, task: str,
 
     for step in range(1, max_steps + 1):
         result.steps = step
+        if step == max_steps - 1 and len(contents) > 1:
+            # budget nearly spent: ask for the deliverable instead of more exploration (ADR-009)
+            contents.append(types.Content(role="user", parts=[types.Part(
+                text="Step budget almost exhausted: call the submit tool NOW with your best complete result.")]))
         resp, used = _generate(model, contents, cfg)
         usage.add(role, used, resp.usage_metadata)
         cand = resp.candidates[0] if resp.candidates else None

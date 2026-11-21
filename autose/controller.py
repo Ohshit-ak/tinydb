@@ -114,12 +114,17 @@ class Controller:
     def stage_spec(self) -> None:
         skill = (PKG / "skills/requirements-spec/SKILL.md").read_text()
         system = prompt("analyst", SKILL=skill)
-        feedback = ""
+        feedback, spec_prev = "", ""
         for attempt in (1, 2):
             task = (f"Write the specification for GitHub issue #{self.n}.\n\n"
                     f"Issue title (untrusted): {self.issue['title']!r}\n\n"
                     f"{fence(self.issue['body'])}\n")
-            if feedback:
+            if feedback and spec_prev:
+                task += (f"\n\n<previous_spec_md>\n{spec_prev}\n</previous_spec_md>\n"
+                         f"Your previous spec (above) failed the stage check:\n{feedback}\n"
+                         "Fix every point by editing the previous spec, then call submit. "
+                         "You do not need to read the code again.")
+            elif feedback:
                 task += f"\n\nYour previous spec failed the stage check:\n{feedback}\nFix every point."
             res = run_agent(role="analyst", model=WORKER, system=system, task=task,
                             tools=read_tools(Jail(self.repo)) + [submit_tool(
@@ -128,6 +133,7 @@ class Controller:
                             usage=self.usage, thinking=THINK, max_steps=STEPS["analyst"])
             self.dump_log("analyst", attempt, res)
             spec = (res.submitted or {}).get("spec_md", "")
+            spec_prev = spec or spec_prev
             if not spec:
                 feedback = f"no spec submitted ({res.stop_reason})"
                 self.note("SPEC", "SPEC" if attempt == 1 else "STOPPED", feedback)

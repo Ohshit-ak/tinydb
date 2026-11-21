@@ -163,6 +163,7 @@ jobs:
             .autose-run/branch.bundle
             .autose-run/agent_logs/
           if-no-files-found: warn
+          include-hidden-files: true   # .autose-run/ is a dot-directory
       - name: Report a stopped run
         if: steps.ctl.outputs.status != 'done'
         env:
@@ -249,6 +250,7 @@ jobs:
         with:
           name: release-${{ needs.gate.outputs.issue }}-r${{ needs.gate.outputs.round }}
           path: .autose-run/pr.md
+          include-hidden-files: true
 
   ci:
     # Stage 5 check. PRs opened with GITHUB_TOKEN do not trigger `pull_request`
