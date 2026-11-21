@@ -184,6 +184,7 @@ class Table:
         :returns: a list containing the inserted documents' IDs
         """
         doc_ids = []
+        old_next_id = self._next_id
 
         def updater(table: dict):
             for document in documents:
@@ -228,7 +229,11 @@ class Table:
                 table[doc_id] = dict(document)
 
         # See below for details on ``Table._update``
-        self._update_table(updater)
+        try:
+            self._update_table(updater)
+        except Exception:
+            self._next_id = old_next_id
+            raise
 
         return doc_ids
 
