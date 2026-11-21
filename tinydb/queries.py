@@ -259,8 +259,14 @@ class Query(QueryInstance):
 
         :param rhs: The value to compare against
         """
+        def test(value):
+            try:
+                return value == rhs
+            except TypeError:
+                return False
+
         return self._generate_test(
-            lambda value: value == rhs,
+            test,
             ('==', self._path, freeze(rhs))
         )
 
@@ -272,8 +278,14 @@ class Query(QueryInstance):
 
         :param rhs: The value to compare against
         """
+        def test(value):
+            try:
+                return value != rhs
+            except TypeError:
+                return True
+
         return self._generate_test(
-            lambda value: value != rhs,
+            test,
             ('!=', self._path, freeze(rhs))
         )
 
@@ -285,8 +297,14 @@ class Query(QueryInstance):
 
         :param rhs: The value to compare against
         """
+        def test(value):
+            try:
+                return value < rhs
+            except TypeError:
+                return False
+
         return self._generate_test(
-            lambda value: value < rhs,
+            test,
             ('<', self._path, rhs)
         )
 
@@ -298,8 +316,14 @@ class Query(QueryInstance):
 
         :param rhs: The value to compare against
         """
+        def test(value):
+            try:
+                return value <= rhs
+            except TypeError:
+                return False
+
         return self._generate_test(
-            lambda value: value <= rhs,
+            test,
             ('<=', self._path, rhs)
         )
 
@@ -311,8 +335,14 @@ class Query(QueryInstance):
 
         :param rhs: The value to compare against
         """
+        def test(value):
+            try:
+                return value > rhs
+            except TypeError:
+                return False
+
         return self._generate_test(
-            lambda value: value > rhs,
+            test,
             ('>', self._path, rhs)
         )
 
@@ -324,8 +354,14 @@ class Query(QueryInstance):
 
         :param rhs: The value to compare against
         """
+        def test(value):
+            try:
+                return value >= rhs
+            except TypeError:
+                return False
+
         return self._generate_test(
-            lambda value: value >= rhs,
+            test,
             ('>=', self._path, rhs)
         )
 
