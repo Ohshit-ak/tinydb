@@ -403,10 +403,12 @@ stored in the database. In this case ``db.contains(...)`` is your friend:
 
 >>> db.contains(User.name == 'John')
 
-In a similar manner you can look up the number of documents matching a query:
+In a similar manner you can look up the number of documents matching a query, or the total number of documents by calling ``db.count()`` without arguments:
 
 >>> db.count(User.name == 'John')
 2
+>>> db.count()
+5
 
 Recap
 ^^^^^
@@ -429,6 +431,8 @@ Let's summarize the ways to handle data:
 | ``db.get(query)``             | Get one document matching the query                           |
 +-------------------------------+---------------------------------------------------------------+
 | ``db.contains(query)``        | Check if the database contains a matching document            |
++-------------------------------+---------------------------------------------------------------+
+| ``db.count()``                | Get the total number of documents                             |
 +-------------------------------+---------------------------------------------------------------+
 | ``db.count(query)``           | Get the number of matching documents                          |
 +-------------------------------+---------------------------------------------------------------+
