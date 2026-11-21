@@ -69,7 +69,7 @@ jobs:
     timeout-minutes: 5
     permissions:
       issues: write          # ack comment only
-      pull-requests: read
+      pull-requests: write   # ack comment on a PR (review-only) uses the PR's issue thread
     outputs:
       proceed: ${{ steps.g.outputs.proceed }}
       mode: ${{ steps.g.outputs.mode }}

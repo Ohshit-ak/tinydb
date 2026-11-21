@@ -92,7 +92,10 @@ def main() -> int:
         what = {"full": "issue → PR pipeline", "review-only": "independent review"}[out["mode"]]
         extra = f" (variant `{out['variant']}`)" if out["variant"] != "default" else ""
         extra += f" (reviewer `{out['reviewer_variant']}`)" if out["reviewer_variant"] != "independent" else ""
-        gh.comment(n, f"{gh.BOT_PREFIX} started the {what}{extra}: {gh.run_url()}")
+        try:  # the acknowledgement is a courtesy; never fail the gate over it
+            gh.comment(n, f"{gh.BOT_PREFIX} started the {what}{extra}: {gh.run_url()}")
+        except RuntimeError as e:
+            print("ack comment failed:", e)
     print(json.dumps(out, indent=2))
     return 0
 

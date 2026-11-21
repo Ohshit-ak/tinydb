@@ -36,6 +36,15 @@ def main() -> int:
 
     # 1. bring in the branch from the bundle and re-check the path policy (ADR-009 §5)
     sh("git", "fetch", "-q", str(run / "branch.bundle"), f"{branch}:{branch}", cwd=repo)
+    # If the default branch moved during the run, re-apply the bot's commits on top of it.
+    # Otherwise the branch would carry an older .github/workflows/ version, and GitHub
+    # rejects GITHUB_TOKEN pushes that change workflow files.
+    head_default = sh("git", "rev-parse", "HEAD", cwd=repo).strip()
+    if head_default != base:
+        sh("git", "-c", "user.name=autose-bot", "-c", "user.email=autose-bot@users.noreply.github.com",
+           "rebase", "-q", "--onto", head_default, base, branch, cwd=repo)
+        sh("git", "checkout", "-q", head_default, cwd=repo)
+        base = head_default
     paths = [p for p in sh("git", "diff", "--name-only", f"{base}..{branch}", cwd=repo).splitlines() if p]
     bad = checks.path_policy(paths)
     if bad:
