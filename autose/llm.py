@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import random
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -174,8 +175,17 @@ def _try_pool(model: str, contents: list, config, tried: list):
             except genai_errors.APIError as e:  # ClientError / ServerError
                 code = getattr(e, "code", None)
                 msg = str(e)
-                if code == 429 and ("PerDay" in msg or "free_tier" in msg.lower()):
+                if code == 429 and "PerDay" in msg:  # daily quota: this model is done for today
                     _exhausted.add((_key_idx, m))
+                    break
+                if code == 429:  # per-minute limit: wait as long as the API asks, then retry
+                    mm = re.search(r"retryDelay['\"]?:\s*['\"]?(\d+)", msg)
+                    wait = min(int(mm.group(1)) + 1, 90) if mm else delay
+                    print(f"[llm] rate limited on {m}; waiting {wait}s", flush=True)
+                    time.sleep(wait + random.random())
+                    delay = min(delay * 2, 32)
+                    if attempt < 4:
+                        continue
                     break
                 if code in (429, 500, 502, 503, 504) and attempt < 4:
                     time.sleep(delay + random.random())
