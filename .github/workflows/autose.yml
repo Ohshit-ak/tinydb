@@ -51,8 +51,8 @@ on:
 permissions: {}
 
 env:
-  AUTOSE_WORKER_MODEL: ${{ vars.AUTOSE_WORKER_MODEL || 'gemini-3.5-flash' }}
-  AUTOSE_REVIEWER_MODEL: ${{ vars.AUTOSE_REVIEWER_MODEL || 'gemini-3.6-flash' }}
+  AUTOSE_WORKER_MODEL: ${{ vars.AUTOSE_WORKER_MODEL || 'gemini-3.5-flash-lite' }}
+  AUTOSE_REVIEWER_MODEL: ${{ vars.AUTOSE_REVIEWER_MODEL || 'gemini-3.1-flash-lite' }}
   AUTOSE_WORKER_THINKING: ${{ vars.AUTOSE_WORKER_THINKING || 'low' }}
   AUTOSE_TOKEN_CAP: ${{ vars.AUTOSE_TOKEN_CAP || '2000000' }}
   PYTHON_VERSION: "3.12"

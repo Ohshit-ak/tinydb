@@ -27,10 +27,10 @@ from .tools import Jail, read_tools, run_pytest, run_tools, sandbox_run, submit_
 PKG = Path(__file__).resolve().parent
 PROMPTS = PKG / "prompts"
 
-WORKER = os.environ.get("AUTOSE_WORKER_MODEL") or "gemini-3.5-flash"
+WORKER = os.environ.get("AUTOSE_WORKER_MODEL") or "gemini-3.5-flash-lite"
 THINK = os.environ.get("AUTOSE_WORKER_THINKING", "low")  # ADR-011: latency
 TOKEN_CAP = int(os.environ.get("AUTOSE_TOKEN_CAP") or 2_000_000)
-STEPS = {"analyst": 15, "architect": 20, "builder": 40, "tester": 25}
+STEPS = {"analyst": 10, "architect": 12, "builder": 20, "tester": 12}  # ADR-011: free-tier request budget
 
 
 def prompt(name: str, **subs: str) -> str:
