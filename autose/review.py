@@ -16,7 +16,7 @@ from pathlib import Path
 
 from . import gh
 from .controller import fence, prompt
-from .llm import Usage, check_models, run_agent
+from .llm import QuotaExhausted, Usage, check_models, run_agent
 from .tools import Jail, read_tools, run_tools, submit_tool
 
 REVIEWER = os.environ.get("AUTOSE_REVIEWER_MODEL") or "gemini-3.1-flash-lite"
@@ -102,9 +102,13 @@ def main() -> int:
     tools = read_tools(jail) + run_tools(jail, allow_python=True) + [
         submit_tool("submit_review", "Submit the review verdict.", REVIEW_SCHEMA,
                     ["requirements", "verdict", "summary"])]
-    res = run_agent(role="reviewer", model=model, system=system, task=task, tools=tools,
-                    usage=usage, max_steps=15, temperature=0.2,
-                    thinking=REVIEWER_THINK if a.variant == "independent" else os.environ.get("AUTOSE_WORKER_THINKING", "low"))
+    try:
+            res = run_agent(role="reviewer", model=model, system=system, task=task, tools=tools,
+                        usage=usage, max_steps=15, temperature=0.2,
+                        thinking=REVIEWER_THINK if a.variant == "independent" else os.environ.get("AUTOSE_WORKER_THINKING", "low"))
+    except QuotaExhausted as e:  # no quota left: post an inconclusive review, never a crash
+        from .llm import AgentResult
+        res = AgentResult(submitted=None, steps=0, stop_reason=f"model quota exhausted: {str(e)[:200]}")
     # A review that never finished is inconclusive: no rework is dispatched, a human looks (post_review).
     v = res.submitted or {"verdict": "inconclusive", "target": "none", "requirements": [],
                           "findings": [], "summary": f"Reviewer did not submit a verdict ({res.stop_reason})."}

@@ -302,7 +302,8 @@ jobs:
       - id: rev
         env:
           # the Reviewer runs on its own Google project/key (ADR-008, ADR-011)
-          GEMINI_API_KEYS: ${{ secrets.GEMINI_REVIEWER_API_KEY }}
+          # reviewer key first; worker keys only as quota fallback (still reviewer-pool models only)
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_REVIEWER_API_KEY }},${{ secrets.GEMINI_API_KEY_2 }},${{ secrets.GEMINI_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ needs.release.outputs.pr || needs.gate.outputs.pr }}
           ISSUE: ${{ needs.gate.outputs.issue }}
