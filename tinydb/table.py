@@ -722,6 +722,13 @@ class Table:
 
         self._query_cache.clear()
 
+    def _reset(self) -> None:
+        """
+        Reset table state (query cache and next ID).
+        """
+        self.clear_cache()
+        self._next_id = None
+
     def __len__(self):
         """
         Count the total number of documents in this table.
